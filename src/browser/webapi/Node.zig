@@ -1150,7 +1150,6 @@ const CloneError = error{
     IFrameLoadError,
     TooManyContexts,
     LinkLoadError,
-    SchedulerClosed,
     StyleLoadError,
     TypeError,
     CompilationError,
