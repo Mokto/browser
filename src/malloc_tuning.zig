@@ -34,6 +34,9 @@
 //! closes, but the few chunks that outlive it keep that memory in the process,
 //! so the idle footprint climbs to the largest page served so far. `trim`
 //! returns it: the server calls it when a connection's worker is done.
+//!
+//! musl builds link mimalloc instead (see build.zig). There, `apply` makes
+//! mimalloc purge freed pages immediately and `trim` runs `mi_collect`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -44,13 +47,29 @@ const log = lp.log;
 const MMAP_THRESHOLD = 128 * 1024;
 
 const is_glibc = builtin.target.os.tag == .linux and builtin.target.abi.isGnu();
+// musl builds link mimalloc in place of the libc malloc (see build.zig).
+const is_mimalloc = builtin.target.os.tag == .linux and builtin.target.abi.isMusl();
 
 // malloc.h
 const M_MMAP_THRESHOLD: c_int = -3;
 extern "c" fn mallopt(param: c_int, value: c_int) c_int;
 extern "c" fn malloc_trim(pad: usize) c_int;
 
+// mimalloc.h: mi_option_purge_delay in mi_option_t
+const mi_option_purge_delay: c_int = 15;
+extern "c" fn mi_option_set(option: c_int, value: c_long) void;
+extern "c" fn mi_collect(force: bool) void;
+
 pub fn apply() void {
+    if (comptime is_mimalloc) {
+        // mimalloc delays purging freed pages, and an idle server makes no
+        // allocator calls to run the delayed purge, so the pages stay
+        // resident. MIMALLOC_PURGE_DELAY remains the override.
+        if (std.c.getenv("MIMALLOC_PURGE_DELAY") == null) {
+            mi_option_set(mi_option_purge_delay, 0);
+        }
+        return;
+    }
     if (comptime !is_glibc) {
         return;
     }
@@ -65,6 +84,9 @@ pub fn apply() void {
 /// Returns the free memory of every malloc arena to the OS, including the
 /// free pages below live chunks that free() never returns.
 pub fn trim() void {
+    if (comptime is_mimalloc) {
+        return mi_collect(true);
+    }
     if (comptime !is_glibc) {
         return;
     }
