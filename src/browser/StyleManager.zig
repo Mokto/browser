@@ -4979,7 +4979,24 @@ pub const Length = packed struct(u36) {
     // allowing us to store both directly.
     const Unit = enum(u4) { auto, content, px, vw, vh, percent, em, rem, calc_percent, calc_vw, calc_vh, calc_em, calc_rem };
 
+    // Ocean stand-in until upstream resolves var() (lightpanda-io/browser#4706):
+    // `var(--x, fallback)` is read as its fallback, which is only right while
+    // --x is undefined. Stripe's card-number input relies on exactly that.
+    fn varFallback(text: []const u8) ?[]const u8 {
+        if (!std.ascii.startsWithIgnoreCase(text, "var(") or text[text.len - 1] != ')') return null;
+        const inner = text[4 .. text.len - 1];
+        var depth: usize = 0;
+        for (inner, 0..) |c, i| switch (c) {
+            '(' => depth += 1,
+            ')' => depth -|= 1,
+            ',' => if (depth == 0) return std.mem.trim(u8, inner[i + 1 ..], &std.ascii.whitespace),
+            else => {},
+        };
+        return null;
+    }
+
     fn parse(text: []const u8) Length {
+        if (varFallback(text)) |fallback| return parse(fallback);
         if (isIntrinsic(text)) {
             return .{ .unit = .content };
         }
@@ -4995,6 +5012,7 @@ pub const Length = packed struct(u36) {
 
     // A margin may be negative and has no intrinsic sizes; auto is 0.
     fn parseMargin(text: []const u8) Length {
+        if (varFallback(text)) |fallback| return parseMargin(fallback);
         if (Calc.isCalc(text)) {
             return Calc.parse(text);
         }
@@ -8974,6 +8992,13 @@ test "StyleManager: records: geometry packs its lengths' units with the flags" {
         }
     }
     try testing.expectEqual(computed, Geometry.Stored.pack(computed).unpack());
+}
+
+test "StyleManager: var() with a fallback reads as the fallback" {
+    try testing.expectEqual(Length{ .value = 0, .unit = .px }, Length.parse("var(--missing, 0)"));
+    try testing.expectEqual(Length{ .value = 100, .unit = .px }, Length.parse("var(--missing,100px)"));
+    try testing.expectEqual(Length{ .value = 32, .unit = .px }, Length.parseMargin("VAR(--a, var(--b, 32px))"));
+    try testing.expectEqual(Length{}, Length.parse("var(--no-fallback)"));
 }
 
 test "StyleManager: calc() reduces to px and one relative term" {
