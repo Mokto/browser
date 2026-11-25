@@ -828,13 +828,31 @@ pub fn structuredClone(_: *const Window, value: js.Value) !js.Value {
     return value.structuredClone() catch error.TryCatchRethrow;
 }
 
-fn getFrame(self: *Window, idx: usize) !?*Window {
-    const frame = self._frame;
-    const frames = frame.child_frames.items;
+fn getFrame(self: *Window, idx: usize, frame: *Frame) ?Access {
+    const frames = self.orderedChildFrames();
     if (idx >= frames.len) {
         return null;
     }
+    return Access.init(frame.window, frames[idx].window);
+}
 
+// The child frame whose name is `name`, first in tree order. A frame's name is
+// its window.name, which starts as the iframe's name attribute.
+pub fn getNamedFrame(self: *Window, name: []const u8, frame: *Frame) ?Access {
+    if (name.len == 0) {
+        return null;
+    }
+    for (self.orderedChildFrames()) |child| {
+        if (std.mem.eql(u8, child.window._name, name)) {
+            return Access.init(frame.window, child.window);
+        }
+    }
+    return null;
+}
+
+fn orderedChildFrames(self: *Window) []*Frame {
+    const frame = self._frame;
+    const frames = frame.child_frames.items;
     if (frame.child_frames_sorted == false) {
         std.mem.sort(*Frame, frames, {}, struct {
             fn lessThan(_: void, a: *Frame, b: *Frame) bool {
@@ -848,7 +866,7 @@ fn getFrame(self: *Window, idx: usize) !?*Window {
         }.lessThan);
         frame.child_frames_sorted = true;
     }
-    return frames[idx].window;
+    return frames;
 }
 
 fn getFramesLength(self: *const Window) u32 {
@@ -1403,6 +1421,14 @@ const CrossOriginWindow = struct {
         return self.window.getFramesLength();
     }
 
+    fn getFrame(self: *CrossOriginWindow, idx: usize, frame: *Frame) ?Access {
+        return self.window.getFrame(idx, frame);
+    }
+
+    fn getNamedFrame(self: *CrossOriginWindow, name: []const u8, frame: *Frame) ?Access {
+        return self.window.getNamedFrame(name, frame);
+    }
+
     fn getWindow(self: *CrossOriginWindow, frame: *Frame) Access {
         return Access.init(frame.window, self.window);
     }
@@ -1447,6 +1473,8 @@ const CrossOriginWindow = struct {
         pub const opener = bridge.accessor(CrossOriginWindow.getOpener, null, .{});
         pub const closed = bridge.accessor(CrossOriginWindow.getClosed, null, .{});
         pub const length = bridge.accessor(CrossOriginWindow.getFramesLength, null, .{});
+        pub const index = bridge.indexed(CrossOriginWindow.getFrame, null, .{ .null_as_undefined = true });
+        pub const @"[str]" = bridge.namedIndexed(CrossOriginWindow.getNamedFrame, null, null, null, null, .{ .null_as_undefined = true });
     };
 };
 
